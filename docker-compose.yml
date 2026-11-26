@@ -1,0 +1,73 @@
+# Laboratorio "Fallos en cascada": ESCENARIO BASE VULNERABLE
+# Solo para uso local y aislado.
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./services/gateway/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [frontend, backend]
+    depends_on: [api]
+
+  api:
+    build: ./services/api
+    environment:
+      DB_HOST: db
+      DB_NAME: consultia
+      DB_USER: consultia
+      DB_PASSWORD: cambiame
+      # Vulnerable: sin timeout, reintentos inmediatos, sin bulkhead ni breaker
+      LLM_TIMEOUT: ""
+      RETRIES: "2"
+      BACKOFF: "0"
+      LLM_BULKHEAD: "0"
+      CB_ENABLED: "0"
+    networks: [backend]
+    depends_on:
+      db:
+        condition: service_healthy
+      llm:
+        condition: service_started
+      stt:
+        condition: service_started
+
+  llm:
+    build: ./services/llm
+    environment:
+      LATENCY_MS: "2000"
+      MAX_CONCURRENCY: "2"
+    networks: [backend]
+
+  stt:
+    build: ./services/stt
+    networks: [backend]
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: consultia
+      POSTGRES_USER: consultia
+      POSTGRES_PASSWORD: cambiame
+    volumes:
+      - ./services/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U consultia -d consultia"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks: [backend]
+
+  tester:
+    build: ./tester
+    profiles: ["tools"]
+    environment:
+      TARGET: http://gateway:8080
+    volumes:
+      - ./evidencias:/evidencias
+    networks: [frontend]
+
+networks:
+  frontend: {}
+  backend:
+    internal: true

@@ -1,0 +1,16 @@
+# Override con mitigaciones de resiliencia (P3). P4 y P5 agregan aqui mTLS, secretos y hardening.
+# Uso: docker compose -f docker-compose.yml -f docker-compose.hardened.yml up -d --build
+services:
+  gateway:
+    volumes:
+      - ./services/gateway/default.hardened.conf:/etc/nginx/conf.d/default.conf:ro
+
+  api:
+    environment:
+      LLM_TIMEOUT: "2"
+      RETRIES: "1"
+      BACKOFF: "1"
+      LLM_BULKHEAD: "4"
+      CB_ENABLED: "1"
+      CB_FAILURES: "3"
+      CB_RESET_SECONDS: "10"

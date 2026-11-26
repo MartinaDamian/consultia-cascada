@@ -62,7 +62,7 @@ Con el stack endurecido en ejecución:
 .\security\rotate_secret.ps1
 ```
 
-El resultado se registra en `evidencias/P4_rotacion_secreto.txt`. Al terminar el laboratorio:
+El resultado se registra en `evidencias/p4-zerotrust/P4_rotacion_secreto.txt`. Al terminar el laboratorio:
 
 ```powershell
 docker compose --profile tools -f docker-compose.yml -f docker-compose.hardened.yml down -v

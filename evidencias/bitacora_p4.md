@@ -36,7 +36,7 @@
 ---
 
 ## 3. Evidencias Generadas en `evidencias/`
-- `evidencias/P4_mtls_prueba.txt` y `evidencias/P4_mtls_rechazo.png` — Prueba negativa (rechazo TLS sin certificado cliente) y positiva (`200 OK` con certificado `tester`) contra `https://api:5000/citas`.
-- `evidencias/P4_segmentacion_nmap.txt` y `evidencias/P4_segmentacion_nmap.png` — Escaneo desde `tester` (`frontend`) demostrando el aislamiento de `api`, `llm`, `stt` y `db`.
-- `evidencias/P4_secretos_inspect.txt` y `evidencias/P4_secretos_inspect.png` — Salida de `docker inspect` en `api` y `db` verificando ausencia de contraseñas en variables de entorno.
-- `evidencias/P4_rotacion_secreto.txt` y `evidencias/P4_rotacion_secreto.png` — Ejecución de `security/rotate_secret.ps1`, recreación aislada de `api` y rechazo de la credencial anterior en PostgreSQL.
+- `evidencias/p4-zerotrust/P4_mtls_prueba.txt` y `evidencias/p4-zerotrust/P4_mtls_rechazo.png` — Prueba negativa (rechazo TLS sin certificado cliente) y positiva (`200 OK` con certificado `tester`) contra `https://api:5000/citas`.
+- `evidencias/p4-zerotrust/P4_segmentacion_nmap.txt` y `evidencias/p4-zerotrust/P4_segmentacion_nmap.png` — Escaneo desde `tester` (`frontend`) demostrando el aislamiento de `api`, `llm`, `stt` y `db`.
+- `evidencias/p4-zerotrust/P4_secretos_inspect.txt` y `evidencias/p4-zerotrust/P4_secretos_inspect.png` — Salida de `docker inspect` en `api` y `db` verificando ausencia de contraseñas en variables de entorno.
+- `evidencias/p4-zerotrust/P4_rotacion_secreto.txt` y `evidencias/p4-zerotrust/P4_rotacion_secreto.png` — Ejecución de `security/rotate_secret.ps1`, recreación aislada de `api` y rechazo de la credencial anterior en PostgreSQL.

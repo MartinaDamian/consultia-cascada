@@ -151,7 +151,7 @@ docker inspect consultia-cascada-api-1 consultia-cascada-db-1 --format '{{range 
 .\security\rotate_secret.ps1
 ```
 
-El escaneo apunta a las IPs privadas de `api`, `llm`, `stt` y `db` desde `tester`, conectado únicamente a `frontend`; los puertos deben aparecer como `filtered`. El `docker inspect` muestra la ruta del secreto, pero no su contenido. `security/rotate_secret.ps1` guarda la evidencia de rotación en `evidencias/P4_rotacion_secreto.txt`.
+El escaneo apunta a las IPs privadas de `api`, `llm`, `stt` y `db` desde `tester`, conectado únicamente a `frontend`; los puertos deben aparecer como `filtered`. El `docker inspect` muestra la ruta del secreto, pero no su contenido. `security/rotate_secret.ps1` guarda la evidencia de rotación en `evidencias/p4-zerotrust/P4_rotacion_secreto.txt`.
 
 Para detener el entorno y borrar también los volúmenes de datos locales:
 

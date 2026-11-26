@@ -1,10 +1,12 @@
-# Override con mitigaciones de resiliencia (P3).
-# P4 integrara de forma aditiva mTLS, secretos y hardening de contenedores sin romper P3.
+# Override con mitigaciones de resiliencia (P3), Zero Trust mTLS, segmentacion de red y secretos (P4).
 # Uso: docker compose -f docker-compose.yml -f docker-compose.hardened.yml up -d --build
 services:
   gateway:
     volumes:
       - ./services/gateway/default.hardened.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./security/certs/ca.crt:/etc/nginx/certs/ca.crt:ro
+      - ./security/certs/gateway.crt:/etc/nginx/certs/gateway.crt:ro
+      - ./security/certs/gateway.key:/etc/nginx/certs/gateway.key:ro
 
   api:
     environment:
@@ -26,3 +28,125 @@ services:
       CB_ENABLED: "1"
       CB_FAILURES: "3"
       CB_RESET_SECONDS: "10"
+      LLM_URL: https://llm:5002/analyze
+      STT_URL: https://stt:5001/transcribe
+      TLS_CA_CERT: /certs/ca.crt
+      TLS_CLIENT_CERT: /certs/api.crt
+      TLS_CLIENT_KEY: /certs/api.key
+      DB_SSLMODE: verify-full
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      DB_PASSWORD: ""
+    volumes:
+      - ./security/certs/ca.crt:/certs/ca.crt:ro
+      - ./security/certs/api.crt:/certs/api.crt:ro
+      - ./security/certs/api.key:/certs/api.key:ro
+    secrets:
+      - db_password
+    networks:
+      - backend
+      - db_net
+    command:
+      - gunicorn
+      - -w
+      - "1"
+      - --threads
+      - "8"
+      - -b
+      - "0.0.0.0:5000"
+      - --certfile
+      - /certs/api.crt
+      - --keyfile
+      - /certs/api.key
+      - --ca-certs
+      - /certs/ca.crt
+      - --cert-reqs
+      - "2"
+      - app:app
+
+  llm:
+    volumes:
+      - ./security/certs/ca.crt:/certs/ca.crt:ro
+      - ./security/certs/llm.crt:/certs/llm.crt:ro
+      - ./security/certs/llm.key:/certs/llm.key:ro
+    command:
+      - gunicorn
+      - -w
+      - "1"
+      - --threads
+      - "64"
+      - -b
+      - "0.0.0.0:5002"
+      - --certfile
+      - /certs/llm.crt
+      - --keyfile
+      - /certs/llm.key
+      - --ca-certs
+      - /certs/ca.crt
+      - --cert-reqs
+      - "2"
+      - app:app
+
+  stt:
+    volumes:
+      - ./security/certs/ca.crt:/certs/ca.crt:ro
+      - ./security/certs/stt.crt:/certs/stt.crt:ro
+      - ./security/certs/stt.key:/certs/stt.key:ro
+    command:
+      - gunicorn
+      - -w
+      - "1"
+      - --threads
+      - "16"
+      - -b
+      - "0.0.0.0:5001"
+      - --certfile
+      - /certs/stt.crt
+      - --keyfile
+      - /certs/stt.key
+      - --ca-certs
+      - /certs/ca.crt
+      - --cert-reqs
+      - "2"
+      - app:app
+
+  db:
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_PASSWORD: ""
+    volumes:
+      - ./security/certs/ca.crt:/var/lib/postgresql/certs/ca.crt:ro
+      - ./security/certs/db.crt:/var/lib/postgresql/certs/db.crt:ro
+      - ./security/certs/db.key:/var/lib/postgresql/certs/db.key:ro
+    secrets:
+      - db_password
+    networks: !override
+      - db_net
+    entrypoint:
+      - sh
+      - -c
+      - |
+        mkdir -p /tmp/pgcerts &&
+        cp /var/lib/postgresql/certs/ca.crt /var/lib/postgresql/certs/db.crt /var/lib/postgresql/certs/db.key /tmp/pgcerts/ &&
+        chown -R postgres:postgres /tmp/pgcerts &&
+        chmod 644 /tmp/pgcerts/ca.crt /tmp/pgcerts/db.crt &&
+        chmod 600 /tmp/pgcerts/db.key &&
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tmp/pgcerts/db.crt
+      - -c
+      - ssl_key_file=/tmp/pgcerts/db.key
+      - -c
+      - ssl_ca_file=/tmp/pgcerts/ca.crt
+
+networks:
+  db_net:
+    internal: true
+
+secrets:
+  db_password:
+    file: ./security/secrets/db_password.txt

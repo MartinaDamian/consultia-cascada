@@ -41,6 +41,10 @@ STT_URL = os.getenv("STT_URL", "http://stt:5001/transcribe")
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_NAME = os.getenv("DB_NAME", "consultia")
 DB_USER = os.getenv("DB_USER", "consultia")
+TLS_CA_CERT = os.getenv("TLS_CA_CERT", "")
+TLS_CLIENT_CERT = os.getenv("TLS_CLIENT_CERT", "")
+TLS_CLIENT_KEY = os.getenv("TLS_CLIENT_KEY", "")
+DB_SSLMODE = os.getenv("DB_SSLMODE", "disable")
 
 
 def _read_password():
@@ -65,10 +69,17 @@ log_resilience_config(config)
 
 
 def db_conn():
-    return psycopg2.connect(
-        host=DB_HOST, dbname=DB_NAME, user=DB_USER,
-        password=_read_password(), connect_timeout=3,
-    )
+    kwargs = {
+        "host": DB_HOST,
+        "dbname": DB_NAME,
+        "user": DB_USER,
+        "password": _read_password(),
+        "connect_timeout": 3,
+        "sslmode": DB_SSLMODE,
+    }
+    if DB_SSLMODE == "verify-full" and TLS_CA_CERT:
+        kwargs["sslrootcert"] = TLS_CA_CERT
+    return psycopg2.connect(**kwargs)
 
 
 def _degraded_response(reason, error, retry_after, stt_data=None):
@@ -120,6 +131,10 @@ def consulta():
                     config=config,
                     breaker=None,
                     service_name="stt",
+                    verify=TLS_CA_CERT if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY else None,
+                    cert=(TLS_CLIENT_CERT, TLS_CLIENT_KEY)
+                    if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY
+                    else None,
                 )
             except requests.RequestException:
                 return _degraded_response(
@@ -135,6 +150,10 @@ def consulta():
                     config=config,
                     breaker=llm_breaker if config.cb_enabled else None,
                     service_name="llm",
+                    verify=TLS_CA_CERT if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY else None,
+                    cert=(TLS_CLIENT_CERT, TLS_CLIENT_KEY)
+                    if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY
+                    else None,
                 )
             except pybreaker.CircuitBreakerError:
                 return _degraded_response(

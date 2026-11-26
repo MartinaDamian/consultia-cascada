@@ -1,0 +1,14 @@
+=== 1. Prueba NEGATIVA mTLS (sin certificado cliente) ===
+curl: (56) OpenSSL SSL_read: OpenSSL/3.5.9: error:0A00045C:SSL routines::tlsv13 alert certificate required, errno 0
+Exit code: 56
+
+=== 2. Prueba POSITIVA mTLS (con certificado cliente tester) ===
+HTTP/1.1 200 OK
+Server: gunicorn
+Date: Thu, 26 Nov 2026 19:21:27 GMT
+Connection: keep-alive
+Content-Type: application/json
+Content-Length: 209
+
+{"citas":[{"id":1,"motivo":"control general","paciente":"paciente-001"},{"id":2,"motivo":"chequeo de presion","paciente":"paciente-002"},{"id":3,"motivo":"consulta de seguimiento","paciente":"paciente-003"}]}
+Exit code: 0

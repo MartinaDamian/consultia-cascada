@@ -273,8 +273,18 @@ class LLMCircuitBreaker:
             return func(*args, **kwargs)
 
 
-def _http_get_json(url: str, timeout: float | tuple[float, float | None] | None) -> Any:
-    response = requests.get(url, timeout=timeout)
+def _http_get_json(
+    url: str,
+    timeout: float | tuple[float, float | None] | None,
+    verify: str | bool | None,
+    cert: tuple[str, str] | None,
+) -> Any:
+    request_kwargs: dict[str, Any] = {"timeout": timeout}
+    if verify is not None:
+        request_kwargs["verify"] = verify
+    if cert is not None:
+        request_kwargs["cert"] = cert
+    response = requests.get(url, **request_kwargs)
     response.raise_for_status()
     return response.json()
 
@@ -285,6 +295,8 @@ def call_with_retries(
     config: ResilienceConfig,
     breaker: LLMCircuitBreaker | None = None,
     service_name: str = "upstream",
+    verify: str | bool | None = None,
+    cert: tuple[str, str] | None = None,
 ) -> Any:
     """Invoca un servicio HTTP con reintentos, backoff+jitter y circuit breaker.
 
@@ -300,8 +312,8 @@ def call_with_retries(
 
         try:
             if breaker is not None and breaker.enabled:
-                return breaker.call(_http_get_json, url, timeout)
-            return _http_get_json(url, timeout)
+                return breaker.call(_http_get_json, url, timeout, verify, cert)
+            return _http_get_json(url, timeout, verify, cert)
         except pybreaker.CircuitBreakerError:
             # El circuito ya estaba OPEN o se acaba de abrir (CLOSED/HALF_OPEN -> OPEN):
             # abortar inmediatamente sin reintentar.

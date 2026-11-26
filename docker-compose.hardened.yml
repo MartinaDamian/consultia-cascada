@@ -10,10 +10,21 @@ services:
 
   api:
     environment:
-      LLM_TIMEOUT: "2"
+      # --- Bloque P3: Resiliencia y Disponibilidad ---
+      # Timeouts de conexion y lectura (segundos). LLM tarda ~2.0s normal; 2.5s falla rapido en cola.
+      HTTP_CONNECT_TIMEOUT: "1.0"
+      STT_TIMEOUT: "1.0"
+      LLM_TIMEOUT: "2.5"
+      # Reintentos acotados con backoff exponencial + jitter (abortados si el breaker esta OPEN)
       RETRIES: "1"
       BACKOFF: "1"
+      BACKOFF_BASE_SECONDS: "0.2"
+      BACKOFF_MAX_SECONDS: "2.0"
+      BACKOFF_JITTER_SECONDS: "0.2"
+      # Bulkhead: maximo 4 llamadas simultaneas a /consulta -> llm (deja >=4 hilos libres a /citas y /health)
       LLM_BULKHEAD: "4"
+      BULKHEAD_RETRY_AFTER: "2"
+      # Circuit Breaker (pybreaker): transiciones registradas CLOSED -> OPEN -> HALF_OPEN -> CLOSED
       CB_ENABLED: "1"
       CB_FAILURES: "3"
       CB_RESET_SECONDS: "10"

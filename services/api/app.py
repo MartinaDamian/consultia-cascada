@@ -5,23 +5,34 @@ Por defecto es VULNERABLE a fallos en cascada:
   - reintentos inmediatos
   - sin bulkhead ni circuit breaker
 
-Las mitigaciones (P3) se activan por variables de entorno:
-  LLM_TIMEOUT=2        segundos de timeout (vacio = sin timeout)
-  RETRIES=2            reintentos inmediatos (con backoff si BACKOFF=1)
-  BACKOFF=1            espera exponencial con jitter entre reintentos
-  LLM_BULKHEAD=4       maximo de llamadas simultaneas a llm (0 = sin limite)
-  CB_ENABLED=1         circuit breaker
-  CB_FAILURES=3        fallos seguidos para abrir el circuito
-  CB_RESET_SECONDS=10  tiempo hasta pasar a semiabierto
+Las mitigaciones (P3) se activan por variables de entorno (ver resilience.py):
+  HTTP_CONNECT_TIMEOUT=1.0   segundos de timeout de conexion (vacio = sin limite)
+  STT_TIMEOUT=1.0            segundos de timeout de lectura hacia stt
+  LLM_TIMEOUT=2.5            segundos de timeout de lectura hacia llm
+  RETRIES=1                  reintentos maximos (con backoff si BACKOFF=1)
+  BACKOFF=1                  espera exponencial con jitter entre reintentos
+  LLM_BULKHEAD=4             maximo de llamadas simultaneas a /consulta -> llm (0 = sin limite)
+  BULKHEAD_RETRY_AFTER=2     segundos sugeridos en Retry-After cuando el bulkhead se llena
+  CB_ENABLED=1               circuit breaker con pybreaker
+  CB_FAILURES=3              fallos seguidos para abrir el circuito (CLOSED -> OPEN)
+  CB_RESET_SECONDS=10        tiempo hasta pasar a semiabierto (OPEN -> HALF_OPEN)
 """
 import os
-import random
-import threading
-import time
 
 import psycopg2
+import pybreaker
 import requests
 from flask import Flask, jsonify
+
+from resilience import (
+    Bulkhead,
+    BulkheadFullError,
+    LLMCircuitBreaker,
+    ResilienceConfig,
+    build_timeout,
+    call_with_retries,
+    log_resilience_config,
+)
 
 app = Flask(__name__)
 
@@ -44,54 +55,17 @@ def _read_password():
     return os.getenv("DB_PASSWORD", "cambiame")
 
 
-def _float_env(name):
-    value = os.getenv(name, "")
-    return float(value) if value else None
-
-
-LLM_TIMEOUT = _float_env("LLM_TIMEOUT")
-RETRIES = int(os.getenv("RETRIES", "2"))
-BACKOFF = os.getenv("BACKOFF", "0") == "1"
-BULKHEAD = int(os.getenv("LLM_BULKHEAD", "0"))
-CB_ENABLED = os.getenv("CB_ENABLED", "0") == "1"
-CB_FAILURES = int(os.getenv("CB_FAILURES", "3"))
-CB_RESET = float(os.getenv("CB_RESET_SECONDS", "10"))
-
-bulkhead = threading.BoundedSemaphore(BULKHEAD) if BULKHEAD > 0 else None
-
-
-class CircuitBreaker:
-    def __init__(self):
-        self.failures = 0
-        self.opened_at = None
-        self.lock = threading.Lock()
-
-    def allow(self):
-        with self.lock:
-            if self.opened_at is None:
-                return True
-            if time.time() - self.opened_at >= CB_RESET:
-                return True  # semiabierto: deja pasar un intento
-            return False
-
-    def success(self):
-        with self.lock:
-            if self.opened_at is not None:
-                app.logger.warning("circuit breaker: CERRADO")
-            self.failures = 0
-            self.opened_at = None
-
-    def failure(self):
-        with self.lock:
-            self.failures += 1
-            if self.failures >= CB_FAILURES and self.opened_at is None:
-                self.opened_at = time.time()
-                app.logger.warning("circuit breaker: ABIERTO")
-            elif self.opened_at is not None:
-                self.opened_at = time.time()
-
-
-breaker = CircuitBreaker()
+config = ResilienceConfig.from_env()
+STT_HTTP_TIMEOUT = build_timeout(config.http_connect_timeout, config.stt_timeout)
+LLM_HTTP_TIMEOUT = build_timeout(config.http_connect_timeout, config.llm_timeout)
+llm_bulkhead = Bulkhead(config.llm_bulkhead, name="llm")
+llm_breaker = LLMCircuitBreaker(
+    enabled=config.cb_enabled,
+    fail_max=config.cb_failures,
+    reset_timeout=config.cb_reset_seconds,
+    name="llm",
+)
+log_resilience_config(config)
 
 
 def db_conn():
@@ -108,22 +82,18 @@ def db_conn():
     return psycopg2.connect(**kwargs)
 
 
-def call_with_retries(url):
-    req_kwargs = {"timeout": LLM_TIMEOUT}
-    if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY:
-        req_kwargs["verify"] = TLS_CA_CERT
-        req_kwargs["cert"] = (TLS_CLIENT_CERT, TLS_CLIENT_KEY)
-    last = None
-    for attempt in range(RETRIES + 1):
-        try:
-            r = requests.get(url, **req_kwargs)
-            r.raise_for_status()
-            return r.json()
-        except requests.RequestException as exc:
-            last = exc
-            if attempt < RETRIES and BACKOFF:
-                time.sleep(min(2 ** attempt * 0.2, 2) + random.uniform(0, 0.2))
-    raise last
+def _degraded_response(reason, error, retry_after, stt_data=None):
+    payload = {
+        "status": "degraded",
+        "degraded": True,
+        "reason": reason,
+        "error": error,
+        "retry_after_seconds": retry_after,
+    }
+    if stt_data is not None:
+        payload["stt"] = stt_data
+        payload["llm"] = None
+    return jsonify(payload), 503, {"Retry-After": str(retry_after)}
 
 
 @app.get("/health")
@@ -143,23 +113,67 @@ def citas():
 @app.get("/consulta")
 def consulta():
     """Depende de stt y llm (el punto de fallo del laboratorio)."""
-    if CB_ENABLED and not breaker.allow():
-        return jsonify(error="servicio de analisis no disponible",
-                       degraded=True), 503, {"Retry-After": "10"}
+    # 1. Fail-fast si el circuit breaker esta OPEN dentro de su ventana de enfriamiento
+    if llm_breaker.is_blocking():
+        return _degraded_response(
+            reason="circuit_breaker_open",
+            error="Servicio de analisis temporalmente no disponible (circuit breaker abierto)",
+            retry_after=llm_breaker.retry_after_seconds(),
+        )
 
-    if bulkhead is not None and not bulkhead.acquire(blocking=False):
-        return jsonify(error="capacidad de analisis agotada",
-                       degraded=True), 503, {"Retry-After": "2"}
+    # 2. Bulkhead: limita concurrencia de /consulta para dejar hilos libres a /citas y /health
     try:
-        texto = call_with_retries(STT_URL)
-        analisis = call_with_retries(LLM_URL)
-        if CB_ENABLED:
-            breaker.success()
-        return jsonify(stt=texto, llm=analisis)
-    except requests.RequestException:
-        if CB_ENABLED:
-            breaker.failure()
-        return jsonify(error="dependencia no disponible", degraded=True), 503
-    finally:
-        if bulkhead is not None:
-            bulkhead.release()
+        with llm_bulkhead.slot():
+            try:
+                texto = call_with_retries(
+                    url=STT_URL,
+                    timeout=STT_HTTP_TIMEOUT,
+                    config=config,
+                    breaker=None,
+                    service_name="stt",
+                    verify=TLS_CA_CERT if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY else None,
+                    cert=(TLS_CLIENT_CERT, TLS_CLIENT_KEY)
+                    if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY
+                    else None,
+                )
+            except requests.RequestException:
+                return _degraded_response(
+                    reason="stt_unavailable",
+                    error="Servicio de transcripcion (stt) no disponible",
+                    retry_after=config.bulkhead_retry_after,
+                )
+
+            try:
+                analisis = call_with_retries(
+                    url=LLM_URL,
+                    timeout=LLM_HTTP_TIMEOUT,
+                    config=config,
+                    breaker=llm_breaker if config.cb_enabled else None,
+                    service_name="llm",
+                    verify=TLS_CA_CERT if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY else None,
+                    cert=(TLS_CLIENT_CERT, TLS_CLIENT_KEY)
+                    if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY
+                    else None,
+                )
+            except pybreaker.CircuitBreakerError:
+                return _degraded_response(
+                    reason="circuit_breaker_open",
+                    error="Servicio de analisis temporalmente no disponible (circuit breaker abierto)",
+                    retry_after=llm_breaker.retry_after_seconds(),
+                    stt_data=texto,
+                )
+            except requests.RequestException:
+                return _degraded_response(
+                    reason="llm_unavailable",
+                    error="Analisis IA (llm) no disponible; transcripcion entregada en modo degradado",
+                    retry_after=config.bulkhead_retry_after,
+                    stt_data=texto,
+                )
+
+            return jsonify(stt=texto, llm=analisis)
+    except BulkheadFullError:
+        return _degraded_response(
+            reason="bulkhead_full",
+            error="Capacidad de analisis temporalmente agotada; intente nuevamente",
+            retry_after=config.bulkhead_retry_after,
+        )

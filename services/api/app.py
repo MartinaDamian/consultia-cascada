@@ -30,6 +30,10 @@ STT_URL = os.getenv("STT_URL", "http://stt:5001/transcribe")
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_NAME = os.getenv("DB_NAME", "consultia")
 DB_USER = os.getenv("DB_USER", "consultia")
+TLS_CA_CERT = os.getenv("TLS_CA_CERT", "")
+TLS_CLIENT_CERT = os.getenv("TLS_CLIENT_CERT", "")
+TLS_CLIENT_KEY = os.getenv("TLS_CLIENT_KEY", "")
+DB_SSLMODE = os.getenv("DB_SSLMODE", "disable")
 
 
 def _read_password():
@@ -91,17 +95,28 @@ breaker = CircuitBreaker()
 
 
 def db_conn():
-    return psycopg2.connect(
-        host=DB_HOST, dbname=DB_NAME, user=DB_USER,
-        password=_read_password(), connect_timeout=3,
-    )
+    kwargs = {
+        "host": DB_HOST,
+        "dbname": DB_NAME,
+        "user": DB_USER,
+        "password": _read_password(),
+        "connect_timeout": 3,
+        "sslmode": DB_SSLMODE,
+    }
+    if DB_SSLMODE == "verify-full" and TLS_CA_CERT:
+        kwargs["sslrootcert"] = TLS_CA_CERT
+    return psycopg2.connect(**kwargs)
 
 
 def call_with_retries(url):
+    req_kwargs = {"timeout": LLM_TIMEOUT}
+    if TLS_CA_CERT and TLS_CLIENT_CERT and TLS_CLIENT_KEY:
+        req_kwargs["verify"] = TLS_CA_CERT
+        req_kwargs["cert"] = (TLS_CLIENT_CERT, TLS_CLIENT_KEY)
     last = None
     for attempt in range(RETRIES + 1):
         try:
-            r = requests.get(url, timeout=LLM_TIMEOUT)
+            r = requests.get(url, **req_kwargs)
             r.raise_for_status()
             return r.json()
         except requests.RequestException as exc:
